@@ -37,8 +37,8 @@ func tests() {
 	}
 	println("get time", (time.Now().UnixNano()-start)/1000/1000)
 
-	println("first:", info(state, "test").first_id)
-	println("last:", info(state, "test").last_id)
+	println("first:", Info(state, "test").first_id)
+	println("last:", Info(state, "test").last_id)
 
 	/*
 		start = time.Now().UnixNano()
@@ -143,7 +143,7 @@ type QueueInfo struct {
 	last_id  int
 }
 
-func info(state *State, queue string) (info QueueInfo) {
+func Info(state *State, queue string) (info QueueInfo) {
 
 	info.first_id = -1
 	info.last_id = -1
@@ -173,7 +173,7 @@ type Message struct {
 func Get(state *State, queue string, message_id int) (msg Message) {
 
 	if message_id == 0 {
-		message_id = info(state, queue).last_id
+		message_id = Info(state, queue).last_id
 	}
 
 	msg.id = -1
