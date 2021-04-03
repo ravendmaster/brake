@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -12,33 +15,35 @@ func main() {
 
 	state := Open()
 
-	message := ""
-	for i := 0; i < 512; i++ {
-		message += "1"
-	}
-	start := time.Now().UnixNano()
-	for i := 1; i <= 32000; i++ {
-		Put(state, "test", strconv.Itoa(i)+" "+message)
-	}
-	println("put time", (time.Now().UnixNano()-start)/1000/1000)
-
-	start = time.Now().UnixNano()
-	id := 1
-	for i := 0; i < 32000; i++ {
-		message := Get(state, "test", id)
-		if message.Id == -1 {
-			println("no more")
-			break
+	/*
+		message := ""
+		for i := 0; i < 512; i++ {
+			message += "1"
 		}
-		id = message.Id + 1
+		start := time.Now().UnixNano()
+		for i := 1; i <= 32000; i++ {
+			Put(state, "test", strconv.Itoa(i)+" "+message)
+		}
+		println("put time", (time.Now().UnixNano()-start)/1000/1000)
 
-		//println(message.id)
+		start = time.Now().UnixNano()
+		id := 1
+		for i := 0; i < 32000; i++ {
+			message := Get(state, "test", id)
+			if message.Id == -1 {
+				println("no more")
+				break
+			}
+			id = message.Id + 1
 
-	}
-	println("get time", (time.Now().UnixNano()-start)/1000/1000)
+			//println(message.id)
 
-	println("first:", Info(state, "test").FirstId)
-	println("last:", Info(state, "test").LastId)
+		}
+		println("get time", (time.Now().UnixNano()-start)/1000/1000)
+
+		println("first:", Info(state, "test").FirstId)
+		println("last:", Info(state, "test").LastId)
+	*/
 
 	/*
 		start = time.Now().UnixNano()
@@ -64,8 +69,84 @@ func main() {
 	//queue_info := info("base")
 	//println(queue_info.first_id, queue_info.last_id)
 
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+
+		switch r.Method {
+		case "POST":
+			processPOSTMethod(state, w, r)
+		case "GET":
+			processGETMethod(state, w, r)
+		}
+	})
+
+	http.ListenAndServe(":80", nil)
+
 	Close(state)
 
+}
+
+type brakesInfo struct {
+	LastId uint64
+}
+
+type incommingHttpMessage struct {
+	Queue string
+	Msg   string
+}
+
+func processPOSTMethod(state *State, w http.ResponseWriter, r *http.Request) {
+
+	body, _ := io.ReadAll(r.Body)
+
+	var incommingMessage []incommingHttpMessage = make([]incommingHttpMessage, 0)
+
+	json.Unmarshal([]byte(body), &incommingMessage)
+
+	for _, item := range incommingMessage {
+		Put(state, item.Queue, item.Msg)
+	}
+
+	res := brakesInfo{LastId: 1}
+
+	json_data, _ := json.Marshal(res)
+	fmt.Fprint(w, string(json_data))
+}
+
+type responseHttpMessage struct {
+	Id  int64
+	Msg string
+}
+
+func processGETMethod(state *State, w http.ResponseWriter, r *http.Request) {
+
+	values := r.URL.Query()
+
+	queue_name := values["queue"][0]
+	id, _ := strconv.ParseInt(values["id"][0], 10, 64)
+	limit, _ := strconv.Atoi(values["limit"][0])
+
+	var res []responseHttpMessage
+
+	for {
+		msg := Get(state, queue_name, int(id))
+		if msg.Id == -1 {
+			break
+		}
+
+		var message = responseHttpMessage{Id: int64(msg.Id), Msg: msg.Message}
+
+		res = append(res, message)
+
+		id = int64(msg.Id) + 1
+		limit--
+		if limit <= 0 {
+			break
+		}
+
+	}
+
+	json_data, _ := json.Marshal(res)
+	fmt.Fprint(w, string(json_data))
 }
 
 func Open() *State {
