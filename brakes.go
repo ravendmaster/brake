@@ -10,7 +10,7 @@ import (
 
 func tests() {
 
-	state := openDB()
+	state := OpenDB()
 
 	message := ""
 	for i := 0; i < 512; i++ {
@@ -87,7 +87,7 @@ func tests() {
 	closeDB(state)
 }
 
-func openDB() *State {
+func OpenDB() *State {
 	state := new(State)
 	state.files = make(map[string]*os.File)
 
