@@ -26,19 +26,19 @@ func tests() {
 	id := 1
 	for i := 0; i < 32000; i++ {
 		message := Get(state, "test", id)
-		if message.id == -1 {
+		if message.Id == -1 {
 			println("no more")
 			break
 		}
-		id = message.id + 1
+		id = message.Id + 1
 
 		//println(message.id)
 
 	}
 	println("get time", (time.Now().UnixNano()-start)/1000/1000)
 
-	println("first:", Info(state, "test").first_id)
-	println("last:", Info(state, "test").last_id)
+	println("first:", Info(state, "test").FirstId)
+	println("last:", Info(state, "test").LastId)
 
 	/*
 		start = time.Now().UnixNano()
@@ -139,26 +139,26 @@ func ticTacList() (result []string) {
 }
 
 type QueueInfo struct {
-	first_id int
-	last_id  int
+	FirstId int
+	LastId  int
 }
 
 func Info(state *State, queue string) (info QueueInfo) {
 
-	info.first_id = -1
-	info.last_id = -1
+	info.FirstId = -1
+	info.LastId = -1
 
 	for _, tic_tac_part := range ticTacList() {
 
 		_, first_id, count := openIndexFileForRead(state, queue, tic_tac_part)
 
-		if (info.first_id == -1 || first_id < info.first_id) && first_id != -1 {
-			info.first_id = first_id
+		if (info.FirstId == -1 || first_id < info.FirstId) && first_id != -1 {
+			info.FirstId = first_id
 		}
 
 		last_id := first_id + count - 1
-		if last_id > info.last_id {
-			info.last_id = last_id
+		if last_id > info.LastId {
+			info.LastId = last_id
 		}
 	}
 
@@ -166,17 +166,17 @@ func Info(state *State, queue string) (info QueueInfo) {
 }
 
 type Message struct {
-	id      int
-	message string
+	Id      int
+	Message string
 }
 
 func Get(state *State, queue string, message_id int) (msg Message) {
 
 	if message_id == 0 {
-		message_id = Info(state, queue).last_id
+		message_id = Info(state, queue).LastId
 	}
 
-	msg.id = -1
+	msg.Id = -1
 	var beside_f_idx *os.File
 	beside_tic_tac_preffix := ""
 	beside_id_delta := 9223372036854775807 //max int
@@ -196,8 +196,8 @@ func Get(state *State, queue string, message_id int) (msg Message) {
 				message_size := readUint32At(f_data, int64(data_file_pos))
 				message_raw := make([]byte, message_size)
 				f_data.ReadAt(message_raw, int64(data_file_pos+4))
-				msg.id = int(message_id)
-				msg.message = string(message_raw)
+				msg.Id = int(message_id)
+				msg.Message = string(message_raw)
 				return msg
 			}
 
@@ -227,8 +227,8 @@ func Get(state *State, queue string, message_id int) (msg Message) {
 		message_size := readUint32At(f_data, int64(data_file_pos))
 		message_raw := make([]byte, message_size)
 		f_data.ReadAt(message_raw, int64(data_file_pos+4))
-		msg.id = beside_idx_start_id
-		msg.message = string(message_raw)
+		msg.Id = beside_idx_start_id
+		msg.Message = string(message_raw)
 	}
 
 	return msg
