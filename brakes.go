@@ -10,7 +10,7 @@ import (
 
 func tests() {
 
-	state := OpenDB()
+	state := Open()
 
 	message := ""
 	for i := 0; i < 512; i++ {
@@ -25,7 +25,7 @@ func tests() {
 	start = time.Now().UnixNano()
 	id := 1
 	for i := 0; i < 32000; i++ {
-		message := get(state, "test", id)
+		message := Get(state, "test", id)
 		if message.id == -1 {
 			println("no more")
 			break
@@ -84,10 +84,10 @@ func tests() {
 	//reader := bufio.NewReader(os.Stdin)
 	//reader.ReadString('\n')
 
-	closeDB(state)
+	Close(state)
 }
 
-func OpenDB() *State {
+func Open() *State {
 	state := new(State)
 	state.files = make(map[string]*os.File)
 
@@ -104,7 +104,7 @@ func OpenDB() *State {
 	return state
 }
 
-func closeDB(state *State) {
+func Close(state *State) {
 	for _, f := range state.files {
 		f.Close()
 	}
@@ -170,7 +170,7 @@ type Message struct {
 	message string
 }
 
-func get(state *State, queue string, message_id int) (msg Message) {
+func Get(state *State, queue string, message_id int) (msg Message) {
 
 	if message_id == 0 {
 		message_id = info(state, queue).last_id
@@ -313,7 +313,7 @@ func getFile(state *State, name string) *os.File {
 
 }
 
-func put(state *State, queue string, message string) {
+func Put(state *State, queue string, message string) {
 
 	part, message_id_for_new_part := getPartForQueue(state, queue)
 
