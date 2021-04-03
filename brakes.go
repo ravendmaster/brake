@@ -125,7 +125,6 @@ func Get(state *State, queue string, message_id int) (msg Message) {
 			if message_id < first_id {
 				temp_id_delta := int(first_id - message_id)
 
-				//println("temp delta to beside ", tic_tac_preffix, temp_id_delta)
 				if temp_id_delta > 0 && (temp_id_delta < beside_id_delta) {
 					beside_id_delta = temp_id_delta
 					beside_f_idx = f_idx
@@ -140,7 +139,6 @@ func Get(state *State, queue string, message_id int) (msg Message) {
 	}
 
 	if beside_f_idx != nil {
-		//println("winer: ", beside_tic_tac_preffix, beside_id_delta, beside_f_idx)
 
 		f_data := getFile(state, queue+beside_tic_tac_preffix+".data")
 
@@ -249,17 +247,6 @@ func Put(state *State, queue string, message string) {
 
 	offset_data, _ := f_data.Seek(0, io.SeekEnd)
 
-	/*
-		buf := new(bytes.Buffer)
-		gob.NewEncoder(buf).Encode(message)
-
-		file_buf := new(bytes.Buffer)
-		file_buf.Grow(4 + buf.Len())
-		binary.Write(file_buf, binary.LittleEndian, uint32(len(message)))
-
-		binary.Write(file_buf, binary.LittleEndian, buf.Bytes())
-		f_data.Write(file_buf.Bytes())
-	*/
 	writeUint32(f_data, uint32(len(message)))
 	f_data.WriteString(message)
 
