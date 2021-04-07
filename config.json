@@ -1,0 +1,12 @@
+{
+    "data_path": "d:/temp/",
+    "tcp_port": 80,
+
+    "topics":
+    [
+    {"name": "test"},
+    {"name": "alpha"},
+    {"name": "beta"},
+    {"name": "gamma"}
+    ]
+}
