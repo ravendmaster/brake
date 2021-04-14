@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -15,37 +17,74 @@ import (
 
 func main() {
 
-	brakes := Brakes()
-	defer brakes.Close()
+	brake := Brake()
+	defer brake.Close()
 
-	go brakes.doTest("test")
-	go brakes.doTest("alpha")
-	go brakes.doTest("beta")
-	go brakes.doTest("gamma")
+	//brake.info("test")
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	go brake.doTest("test", 60_000)
+	go brake.doTest("alpha", 50_000)
+	//go brake.doTest("beta", 100_000)
+	//go brake.doTest("gamma", 200_000)
+	//go brake.doTest("teta", 200_000)
+
+	http.HandleFunc("/push/v1", func(w http.ResponseWriter, r *http.Request) {
+
+		if !checkAuthorization(w, r) {
+			return
+		}
+
+		AuthorizationKey := r.Header["Authorization"]
+		if AuthorizationKey == nil {
+			return
+		}
+		//println(AuthorizationKey[0])
 
 		switch r.Method {
 		case "POST":
-			processPOSTMethod(brakes, w, r)
-		case "GET":
-			processGETMethod(brakes, w, r)
+			processPush(brake, w, r)
 		}
 	})
-	http.ListenAndServe(":"+strconv.Itoa(brakes.config.TcpPort), nil)
+	http.HandleFunc("/pull/v1", func(w http.ResponseWriter, r *http.Request) {
+
+		if !checkAuthorization(w, r) {
+			return
+		}
+
+		switch r.Method {
+		case "GET":
+			processPull(brake, w, r)
+
+		}
+	})
+
+	err := http.ListenAndServe(":"+strconv.Itoa(brake.config.TcpPort), nil)
+	if err != nil {
+		panic(err)
+	}
+
 }
 
-func (brakes *brakes) doTest(queue string) {
+func checkAuthorization(w http.ResponseWriter, r *http.Request) bool {
+	AuthorizationKey := r.Header["Authorization"]
+	if AuthorizationKey == nil {
+		return false
+	}
+	//println(AuthorizationKey[0])
+	return true
+}
 
-	//brakes.send("betta2", "hi")
+func (brake *brakeContext) doTest(topic string, count int) {
+
+	//brake.send("betta2", "hi")
 	//Get(ctx, "test", 9872938293874)
 
 	message := strings.Repeat("1", 512)
 
-	queueInfo := brakes.info(queue)
+	_, lastId := brake.info(topic)
 
-	id := queueInfo.LastId + 1
-	if queueInfo.LastId == -1 {
+	id := lastId + 1
+	if lastId == 0 {
 		id = 1
 	}
 
@@ -53,117 +92,162 @@ func (brakes *brakes) doTest(queue string) {
 
 	var k int
 	start := time.Now().UnixNano()
-	for k = 1; k <= 500000; k++ {
-		brakes.send(queue, strconv.Itoa(id)+"             "+message)
+	for k = 1; k <= count; k++ {
+		testString := strconv.Itoa(int(id)) + "             " + message
+		brake.push(topic, testString)
 		id++
 	}
-	println(queue, "put time", (time.Now().UnixNano()-start)/1000/1000)
+	println(topic, "put time", (time.Now().UnixNano()-start)/1000/1000)
 
 	start = time.Now().UnixNano()
 
 	for i := 1; i < k; i++ {
-		message := brakes.read(queue, idForRead)
-		if message.Id == -1 {
-			println(queue, "no more", idForRead)
+		message := brake.pull(topic, idForRead)
+		if message.Id == 0 {
+			println(topic, "no more", idForRead)
 			break
 		}
 
 		idForRead = message.Id + 1
 
 		res, _ := strconv.Atoi(strings.Split(message.Message, " ")[0])
-		if res != message.Id {
-			print(queue, "error!")
+		if uint64(res) != message.Id {
+			println(topic, "error!")
 		}
-
-		//println(message.id)
-
 	}
-	println(queue, "get time", (time.Now().UnixNano()-start)/1000/1000)
+	println(topic, "get time", (time.Now().UnixNano()-start)/1000/1000)
 
-	queueInfo = brakes.info(queue)
-	println(queue, "messages from", queueInfo.FirstId, "to", queueInfo.LastId)
+	firstId, lastId := brake.info(topic)
+	println(topic, "messages from", firstId, "to", lastId)
 }
 
-const dataFileExtension = ".data"
-const indexFileExtension = ".idx"
-const putStateFileExtension = ".pst"
+const dataFileName = "data"
+const indexFileName = "index"
+const postStateFileName = "pst"
 
-type brakesInfo struct {
+type brakeInfo struct {
 	Error string `json:"error"`
 }
 
 type incommingHttpBody struct {
-	Queue    string   `json:"queue"`
+	Topic    string   `json:"topic"`
 	Messages []string `json:"messages"`
 }
 
-type topic struct {
-	Name string `json:"name"`
+type rootConfigStruct struct {
+	DataPath string              `json:"data_path"`
+	TcpPort  int                 `json:"tcp_port"`
+	Topics   []topicConfigStruct `json:"topics"`
 }
 
-type config struct {
-	DataPath string  `json:"data_path"`
-	TcpPort  int     `json:"tcp_port"`
-	Topics   []topic `json:"topics"`
+type topicConfigStruct struct {
+	Name              string `json:"name"`
+	ChunkStoreTimeSec int    `json:"chunk_store_time_sec"`
 }
 
-func loadConfig() config {
+func loadConfigFromFile() (rootConfigStruct, error) {
 
 	f_cfg, err := os.OpenFile("config.json", os.O_CREATE|os.O_RDONLY, 0644)
 	if err != nil {
 		println(err)
 	}
+	defer f_cfg.Close()
+
 	fileSize, _ := f_cfg.Seek(0, io.SeekEnd)
 	messageBytesBuff := make([]byte, fileSize)
 	f_cfg.ReadAt(messageBytesBuff, 0)
 
-	result := config{DataPath: "", TcpPort: 80}
-	json.Unmarshal(messageBytesBuff, &result)
-	fmt.Println("data_path", result.DataPath)
-	fmt.Println("tcp_port", result.TcpPort)
-	fmt.Println(result.Topics)
+	result := rootConfigStruct{DataPath: "", TcpPort: 80}
+	err = json.Unmarshal(messageBytesBuff, &result)
 
-	return result
+	for idx, topicConfig := range result.Topics {
+		if topicConfig.ChunkStoreTimeSec == 0 {
+			result.Topics[idx].ChunkStoreTimeSec = 86400 * 30 // 30 days
+		}
+	}
+
+	return result, err
 }
 
-func Brakes() *brakes {
+func Brake() *brakeContext {
 
-	brakes := new(brakes)
+	brake := new(brakeContext)
+	brake.files = make(map[string]*os.File)
+	brake.topicsContexts = make(map[string]*topicContext)
 
-	brakes.config = loadConfig()
+	var err error
+	var config rootConfigStruct
+	if config, err = loadConfigFromFile(); err != nil {
+		panic(err)
+	}
+	brake.applyConfig(&config)
 
-	//brakes.rootDataDir = config.DataPath
-
-	brakes.files = make(map[string]*os.File)
-	brakes.queuesContexts = make(map[string]*queueContext)
+	fmt.Println("data_path", brake.config.DataPath)
+	fmt.Println("tcp_port", brake.config.TcpPort)
+	fmt.Println(brake.config.Topics)
 
 	go func() {
 		for {
-			for _, f := range brakes.files {
-				f.Sync()
+			time.Sleep(time.Duration(1) * time.Second)
+
+			config, err := loadConfigFromFile()
+			if err == nil {
+				brake.applyConfig(&config)
+			} else {
+				log.Println(err)
 			}
+		}
+
+	}()
+
+	//brake.rootDataDir = config.DataPath
+
+	go func() {
+		for {
+
+			brake.syncFiles()
+
 			time.Sleep(time.Duration(1) * time.Second)
 		}
 
 	}()
 
-	return brakes
+	return brake
 }
 
-func processPOSTMethod(brakes *brakes, w http.ResponseWriter, r *http.Request) {
+func (brake *brakeContext) applyConfig(config *rootConfigStruct) {
+	brake.config = *config
+	for _, el := range config.Topics {
+		topicContext := brake.getTopicContext(el.Name)
+		topicContext.ChunkStoreTimeSec = el.ChunkStoreTimeSec
+	}
+}
+
+func (brake *brakeContext) syncFiles() {
+	temp := make(map[string]*os.File)
+	brake.Lock()
+	for k, v := range brake.files {
+		temp[k] = v
+	}
+	brake.Unlock()
+
+	for _, f := range temp {
+		f.Sync()
+	}
+}
+
+func processPush(brake *brakeContext, w http.ResponseWriter, r *http.Request) {
+
+	r.Header.Add("Content-Type", "text/plain; charset=utf-8")
 
 	body, _ := io.ReadAll(r.Body)
-	var incommingMessage incommingHttpBody // = make([]incommingHttpBody, 0)
+	var incommingMessage incommingHttpBody
 	json.Unmarshal([]byte(body), &incommingMessage)
 
-	if !brakes.accessGranted(incommingMessage.Queue) {
-		return
-	}
-
 	for _, message := range incommingMessage.Messages {
-		go brakes.send(incommingMessage.Queue, message)
+		brake.push(incommingMessage.Topic, message)
 	}
-	res := brakesInfo{Error: ""}
+	res := brakeInfo{Error: ""}
 	json_data, _ := json.Marshal(res)
 	fmt.Fprint(w, string(json_data))
 }
@@ -173,60 +257,56 @@ type responseHttpMessage struct {
 	Msg string `json:"msg"`
 }
 
-func (brakes *brakes) accessGranted(queue string) (granted bool) {
+func (brake *brakeContext) accessGranted(topic string) (granted bool) {
 
-	for _, el := range brakes.config.Topics {
-		if el.Name == queue {
-			granted = true
-			break
-		}
+	if brake.topicsContexts[topic] == nil {
+		return false
 	}
-
-	return granted
+	return true
 }
 
-func processGETMethod(brakes *brakes, w http.ResponseWriter, r *http.Request) {
+func processPull(brake *brakeContext, w http.ResponseWriter, r *http.Request) {
 
-	AuthorizationKey := r.Header["Authorization"]
-	if AuthorizationKey == nil {
-		return
-	}
-	//println(AuthorizationKey[0])
+	r.Header.Add("Content-Type", "text/plain; charset=utf-8")
 
 	queryParams := r.URL.Query()
 
-	queueName := queryParams["queue"][0]
+	topic := queryParams["topic"][0]
 
-	if !brakes.accessGranted(queueName) {
+	if !brake.accessGranted(topic) {
+
+		jsonData, _ := json.Marshal(brakeInfo{Error: "Topic not registered"})
+		fmt.Fprint(w, string(jsonData))
+
 		return
 	}
 
-	id, _ := strconv.ParseInt(queryParams["id"][0], 10, 64)
+	id, _ := strconv.ParseUint(queryParams["id"][0], 10, 64)
 	limit, _ := strconv.Atoi(queryParams["limit"][0])
 
 	if id == 0 {
 		w.Header().Add("Cache-Control", "max-age=1")
 	}
 
-	maxSize := 10000000
+	maxSize := 10_000_000
 	if queryParams["max_size"] != nil {
 		maxSize, _ = strconv.Atoi(queryParams["max_size"][0])
 	}
 
-	var res []responseHttpMessage
+	res := []responseHttpMessage{}
 
 	for {
 		if limit <= 0 {
 			break
 		}
 
-		msg := brakes.read(queueName, int(id))
-		if msg.Id == -1 {
+		msg := brake.pull(topic, id)
+		if msg.Id == 0 {
 			break
 		}
 		var message = responseHttpMessage{Id: int64(msg.Id), Msg: msg.Message}
 		res = append(res, message)
-		id = int64(msg.Id) + 1
+		id = msg.Id + 1
 		limit--
 		maxSize -= len(message.Msg)
 		if maxSize < 0 {
@@ -239,21 +319,22 @@ func processGETMethod(brakes *brakes, w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, string(jsonData))
 }
 
-func (brakes *brakes) Close() {
-	for _, f := range brakes.files {
+func (brake *brakeContext) Close() {
+	for _, f := range brake.files {
 		f.Close()
 	}
 }
 
 type chunkContext struct {
-	firstMessageId int
-	lastMessageId  int
+	firstMessageId uint64
+	lastMessageId  uint64
 }
 
-type queueContext struct {
+type topicContext struct {
 	initialized               bool
 	activeChunkNo             int
-	firstMessageIdFowNewChunk int
+	ChunkStoreTimeSec         int
+	firstMessageIdForNewChunk uint64
 	startTime                 int64
 
 	chunksContexts []*chunkContext
@@ -261,27 +342,26 @@ type queueContext struct {
 	sync.Mutex
 }
 
-type brakes struct {
-	config config
-	//rootDataDir    string
+type brakeContext struct {
+	config         rootConfigStruct
 	files          map[string]*os.File
-	queuesContexts map[string]*queueContext
+	topicsContexts map[string]*topicContext
 	sync.Mutex
 }
 
-func (brakes *brakes) openIndexFile(queue string, chunk string) (*os.File, int, int) {
+func (brake *brakeContext) openIndexFile(topic string, chunk string) (f_idx *os.File, firstId uint64, count uint64) {
 
-	f_idx := brakes.openFile(queue + chunk + indexFileExtension)
+	f_idx = brake.openFile(topic, indexFileName+chunk)
 
-	firstId := -1
-	count := 0
+	//var firstId uint64
+	//var count uint64
 
 	pos, err := f_idx.Seek(0, io.SeekEnd)
 	if err != nil {
 		println(err)
 	}
 	if pos > 0 {
-		firstId = int(readUint64At(f_idx, 0))
+		firstId = readUint64At(f_idx, 0)
 		count = messageCountByIndexFileSize(int(pos))
 	}
 
@@ -305,6 +385,7 @@ func chunks(priorityChunk int) (result []int) {
 }
 
 func chunkDisplayName(chunk int) string {
+
 	switch chunk {
 	case 0:
 		return "_0"
@@ -318,54 +399,55 @@ func chunkDisplayName(chunk int) string {
 	panic("chunkDisplayName() overflow")
 }
 
-type QueueInfo struct {
-	FirstId int
-	LastId  int
+/*
+type TopicInfo struct {
+	FirstId uint64
+	LastId  uint64
 }
+*/
 
-func (brakes *brakes) info(queue string) (info QueueInfo) {
+func (brake *brakeContext) info(topic string) (FirstId uint64, LastId uint64) {
 
-	info.FirstId = -1
-	info.LastId = -1
+	//info.FirstId = 0
+	//info.LastId = 0
 
 	for _, chunk := range chunks(0) {
-
-		_, firstId, count := brakes.openIndexFile(queue, chunkDisplayName(chunk))
-
-		if (info.FirstId == -1 || firstId < info.FirstId) && firstId != -1 {
-			info.FirstId = firstId
+		_, firstId, count := brake.openIndexFile(topic, chunkDisplayName(chunk))
+		if firstId == 0 {
+			continue
 		}
-
+		if FirstId == 0 || firstId < FirstId {
+			FirstId = firstId
+		}
 		lastId := firstId + count - 1
-		if lastId > info.LastId {
-			info.LastId = lastId
+		if lastId > LastId {
+			LastId = lastId
 		}
 	}
-
-	return info
+	return FirstId, LastId
 }
 
 type Message struct {
-	Id      int
+	Id      uint64
 	Message string
 }
 
-func (brakes *brakes) getQueueContext(queue string) *queueContext {
-	if brakes.queuesContexts[queue] == nil {
-		brakes.queuesContexts[queue] = &queueContext{chunksContexts: make([]*chunkContext, len(chunks(0)))}
+func (brake *brakeContext) getTopicContext(topic string) *topicContext {
+	if brake.topicsContexts[topic] == nil {
+		brake.topicsContexts[topic] = &topicContext{chunksContexts: make([]*chunkContext, len(chunks(0)))}
 		for _, chunk := range chunks(0) {
-			brakes.queuesContexts[queue].chunksContexts[chunk] = &chunkContext{}
+			brake.topicsContexts[topic].chunksContexts[chunk] = &chunkContext{}
 		}
 	}
-	return brakes.queuesContexts[queue]
+	return brake.topicsContexts[topic]
 }
 
-func (brakes *brakes) predictChunk(queue string, id int) int {
+func (brake *brakeContext) predictChunk(topic string, id uint64) int {
 	result := 0
 
 	for _, chunk := range chunks(0) {
 
-		chunkCtx := brakes.getQueueContext(queue).chunksContexts[chunk]
+		chunkCtx := brake.getTopicContext(topic).chunksContexts[chunk]
 
 		if id >= chunkCtx.firstMessageId && id <= chunkCtx.lastMessageId {
 			result = chunk
@@ -375,9 +457,9 @@ func (brakes *brakes) predictChunk(queue string, id int) int {
 	return result
 }
 
-func (brakes *brakes) updatePredictData(queue string, chunk int, firstId int, count int) {
+func (brake *brakeContext) updatePredictData(topic string, chunk int, firstId uint64, count uint64) {
 
-	chunkCtx := brakes.getQueueContext(queue).chunksContexts[chunk]
+	chunkCtx := brake.getTopicContext(topic).chunksContexts[chunk]
 
 	if (chunkCtx.firstMessageId != firstId) || (chunkCtx.lastMessageId != firstId+count-1) {
 		chunkCtx.firstMessageId = firstId
@@ -429,84 +511,108 @@ func writeUint64(f *os.File, data uint64) {
 	f.Write(buff)
 }
 
-func (brakes *brakes) activeChunk(queue string) (int, int) {
+func (brake *brakeContext) activeChunk(topic string) (int, uint64) {
 
-	queueCtx := brakes.getQueueContext(queue)
-	if !queueCtx.initialized {
+	topicCtx := brake.getTopicContext(topic)
+	if !topicCtx.initialized {
 
-		f_putState := brakes.openFile(queue + putStateFileExtension)
+		f_putState := brake.openFile(topic, postStateFileName)
 		pos, _ := f_putState.Seek(0, io.SeekEnd)
 		if pos == 0 {
 			//initialize
-			writeUint32(f_putState, uint32(queueCtx.activeChunkNo))
-			queueCtx.startTime = time.Now().Unix()
-			writeUint64(f_putState, uint64(queueCtx.startTime))
+			writeUint32(f_putState, uint32(topicCtx.activeChunkNo))
+			topicCtx.startTime = time.Now().Unix()
+			writeUint64(f_putState, uint64(topicCtx.startTime))
 
-			queueCtx.firstMessageIdFowNewChunk = 1
+			topicCtx.firstMessageIdForNewChunk = 1
 		} else {
-			queueCtx.activeChunkNo = int(readUint32At(f_putState, 0))
-			queueCtx.startTime = int64(readUint64At(f_putState, 4))
-			queueCtx.firstMessageIdFowNewChunk = int(readUint64At(f_putState, 4+8))
+			topicCtx.activeChunkNo = int(readUint32At(f_putState, 0))
+			topicCtx.startTime = int64(readUint64At(f_putState, 4))
+			topicCtx.firstMessageIdForNewChunk = readUint64At(f_putState, 4+8)
 		}
 
-		queueCtx.initialized = true
+		topicCtx.initialized = true
 
 	}
 
-	return int(queueCtx.activeChunkNo), queueCtx.firstMessageIdFowNewChunk
+	return int(topicCtx.activeChunkNo), topicCtx.firstMessageIdForNewChunk
 }
 
-func switchChunk(brakes *brakes, queue string, startingMessageIdForNewChunk int) (newChunk int) {
+func switchChunk(brake *brakeContext, topic string, startingMessageIdForNewChunk uint64) (newChunk int) {
 
-	queueCtx := brakes.getQueueContext(queue)
+	topicCtx := brake.getTopicContext(topic)
 
-	f_putState := brakes.openFile(queue + putStateFileExtension)
+	f_putState := brake.openFile(topic, postStateFileName)
 
 	newChunk = int(readUint32At(f_putState, 0) + 1)
 	if newChunk >= len(chunks(0)) {
 		newChunk = 0
 	}
 
-	f_idx := brakes.openFile(queue + chunkDisplayName(newChunk) + indexFileExtension)
+	f_idx := brake.openFile(topic, indexFileName+chunkDisplayName(newChunk))
 	f_idx.Truncate(0)
-	f_date := brakes.openFile(queue + chunkDisplayName(newChunk) + dataFileExtension)
+
+	f_date := brake.openFile(topic, dataFileName+chunkDisplayName(newChunk))
 	f_date.Truncate(0)
+
+	timeNow := time.Now().Unix()
 
 	f_putState.Seek(0, io.SeekStart)
 	writeUint32(f_putState, uint32(newChunk))
-	writeUint64(f_putState, uint64(time.Now().Unix()))
-	writeUint64(f_putState, uint64(startingMessageIdForNewChunk))
+	writeUint64(f_putState, uint64(topicCtx.startTime))
+	writeUint64(f_putState, startingMessageIdForNewChunk)
 
-	queueCtx.activeChunkNo = newChunk
-	queueCtx.firstMessageIdFowNewChunk = startingMessageIdForNewChunk
+	topicCtx.activeChunkNo = newChunk
+	topicCtx.firstMessageIdForNewChunk = startingMessageIdForNewChunk
+	topicCtx.startTime = timeNow
 
 	return newChunk
 }
 
-func (brakes *brakes) openFile(name string) *os.File {
+func (brake *brakeContext) openFile(topic string, name string) *os.File {
 
-	brakes.Lock()
-	res := brakes.files[name]
+	brake.Lock()
+	res := brake.files[topic+name]
 
 	if res == nil {
+
+		if _, err := os.Stat(brake.config.DataPath + topic); os.IsNotExist(err) {
+			err = os.Mkdir(brake.config.DataPath+topic, 0777)
+			if err != nil {
+				panic(err)
+			}
+		}
+
 		var err error
-		res, err = os.OpenFile(brakes.config.DataPath+name, os.O_CREATE|os.O_RDWR, 0644)
+		res, err = os.OpenFile(brake.config.DataPath+topic+"/"+name, os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
 			println(err)
 		}
-		brakes.files[name] = res
+		brake.files[topic+name] = res
 	}
-	brakes.Unlock()
+	brake.Unlock()
 
 	return res
 
 }
 
-func messageCountByIndexFileSize(indexFileSize int) int {
-	return int(indexFileSize>>3) - 1
+func messageCountByIndexFileSize(indexFileSize int) uint64 {
+	if (indexFileSize>>3 - 1) <= 0 {
+		return 0
+	}
+	return uint64(indexFileSize>>3 - 1)
 }
 
-func (brakes *brakes) send(queue string, message string) {
+func getTopicConfigByName(brake *brakeContext, topic string) *topicConfigStruct {
+	for _, el := range brake.config.Topics {
+		if el.Name == topic {
+			return &el
+		}
+	}
+	return nil
+}
+
+func (brake *brakeContext) push(topic string, message string) {
 
 	/*
 		var b bytes.Buffer
@@ -516,77 +622,78 @@ func (brakes *brakes) send(queue string, message string) {
 		f_data.Write(b.Bytes())
 	*/
 
-	queueCtx := brakes.getQueueContext(queue)
-	queueCtx.Lock()
+	topicCtx := brake.getTopicContext(topic)
+	topicCtx.Lock()
 
-	defer queueCtx.Unlock()
+	chunk, startingMessageIdFowNewChunk := brake.activeChunk(topic)
 
-	chunk, startingMessageIdFowNewChunk := brakes.activeChunk(queue)
-
-	f_idx := brakes.openFile(queue + chunkDisplayName(chunk) + indexFileExtension)
+	f_idx := brake.openFile(topic, indexFileName+chunkDisplayName(chunk))
 
 	indexFileSize, _ := f_idx.Seek(0, io.SeekEnd)
 	if indexFileSize == 0 {
 		writeUint64(f_idx, uint64(startingMessageIdFowNewChunk))
 	}
 
-	f_data := brakes.openFile(queue + chunkDisplayName(chunk) + dataFileExtension)
+	f_data := brake.openFile(topic, dataFileName+chunkDisplayName(chunk))
 
 	offset_data, _ := f_data.Seek(0, io.SeekEnd)
 
-	writeUint8(f_data, 0) //version
-	writeUint32(f_data, uint32(len(message)))
-	f_data.WriteString(message)
+	var b bytes.Buffer
+	b.WriteByte(0)
+	buff := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buff, uint32(len(message)))
+	b.Write(buff)
+	b.WriteString(message)
+	f_data.Write(b.Bytes())
+
+	//writeUint8(f_data, 0) //version
+	//writeUint32(f_data, uint32(len(message)))
+	//f_data.WriteString(message)
 
 	writeUint64(f_idx, uint64(offset_data))
 
-	brakes.updatePredictData(queue, chunk,
-		int(startingMessageIdFowNewChunk),
-		messageCountByIndexFileSize(int(indexFileSize))+1)
+	brake.updatePredictData(topic, chunk,
+		startingMessageIdFowNewChunk,
+		messageCountByIndexFileSize(int(indexFileSize+1)))
 
-	daysElapsed := (time.Now().Unix() - brakes.getQueueContext(queue).startTime) / 60 / 60 / 24
-	if offset_data >= 100000000 && daysElapsed > 30 {
-		currentStartMessageId := int(readUint64At(f_idx, 0))
+	daysElapsed := int((time.Now().Unix() - brake.getTopicContext(topic).startTime))
+
+	if daysElapsed > topicCtx.ChunkStoreTimeSec || offset_data >= 100_000_000_000 {
+		currentStartMessageId := readUint64At(f_idx, 0)
 		idx_fileLen, _ := f_idx.Seek(0, io.SeekEnd)
 		firstMessageId := currentStartMessageId + messageCountByIndexFileSize(int(idx_fileLen))
-		newChunk := switchChunk(brakes, queue, firstMessageId)
-
-		brakes.updatePredictData(queue, newChunk, firstMessageId, 0)
+		newChunk := switchChunk(brake, topic, firstMessageId)
+		brake.updatePredictData(topic, newChunk, firstMessageId, 0)
 	}
-
+	topicCtx.Unlock()
 }
 
-func (brakes *brakes) read(queue string, id int) (msg Message) {
+func (brake *brakeContext) pull(topic string, id uint64) (msg Message) {
 
 	if id == 0 {
-		id = brakes.info(queue).LastId
+		_, id = brake.info(topic)
 	}
 
-	msg.Id = -1
+	msg.Id = 0
 	var beside_f_idx *os.File
 	beside_chunk := 0
-	beside_idDelta := 9223372036854775807 //max int
-	var beside_idxStartId int
+	beside_idDelta := uint64(0xffffffffffffffff)
+	var beside_idxStartId uint64
 
-	priorityChunk := brakes.predictChunk(queue, id)
-
+	priorityChunk := brake.predictChunk(topic, id)
 	for _, chunk := range chunks(priorityChunk) {
-
-		f_idx, firstId, count := brakes.openIndexFile(queue, chunkDisplayName(chunk))
+		f_idx, firstId, count := brake.openIndexFile(topic, chunkDisplayName(chunk))
 		if count > 0 {
-
-			brakes.updatePredictData(queue, chunk, firstId, count)
-
+			brake.updatePredictData(topic, chunk, firstId, count)
 			if id >= firstId && id < (firstId+count) {
-
 				dataFilePos := int64(readUint64At(f_idx, int64(id-firstId+1)<<3))
-				f_data := brakes.openFile(queue + chunkDisplayName(chunk) + dataFileExtension)
-				msg.Id = int(id)
+				f_data := brake.openFile(topic, dataFileName+chunkDisplayName(chunk))
+				msg.Id = id
 				msg.Message = readMessage(f_data, dataFilePos)
 				return msg
 			}
 			if id < firstId {
-				tempIdDelta := int(firstId - id)
+				tempIdDelta := firstId - id
 				if tempIdDelta > 0 && (tempIdDelta < beside_idDelta) {
 					beside_idDelta = tempIdDelta
 					beside_f_idx = f_idx
@@ -595,14 +702,12 @@ func (brakes *brakes) read(queue string, id int) (msg Message) {
 				}
 			}
 		}
-
 	}
 
 	if beside_f_idx != nil {
-		f_data := brakes.openFile(queue + chunkDisplayName(beside_chunk) + dataFileExtension)
-		dataFilePos := int64(0)
+		f_data := brake.openFile(topic, dataFileName+chunkDisplayName(beside_chunk))
 		msg.Id = beside_idxStartId
-		msg.Message = readMessage(f_data, dataFilePos)
+		msg.Message = readMessage(f_data, 0)
 	}
 
 	return msg

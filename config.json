@@ -4,9 +4,12 @@
 
     "topics":
     [
-    {"name": "test"},
+    {"name": "test", "chunk_store_time_sec": 86400},
     {"name": "alpha"},
     {"name": "beta"},
-    {"name": "gamma"}
+    {"name": "gamma"},
+    {"name": "teta"}
+
+    
     ]
 }
