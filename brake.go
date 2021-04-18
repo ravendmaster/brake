@@ -23,7 +23,7 @@ func main() {
 	//brake.info("test")
 
 	go brake.doTest("test", 60_000)
-	go brake.doTest("alpha", 50_000)
+	//go brake.doTest("alpha", 50_000)
 	//go brake.doTest("beta", 100_000)
 	//go brake.doTest("gamma", 200_000)
 	//go brake.doTest("teta", 200_000)
@@ -33,13 +33,6 @@ func main() {
 		if !checkAuthorization(w, r) {
 			return
 		}
-
-		AuthorizationKey := r.Header["Authorization"]
-		if AuthorizationKey == nil {
-			return
-		}
-		//println(AuthorizationKey[0])
-
 		switch r.Method {
 		case "POST":
 			processPush(brake, w, r)
@@ -50,7 +43,6 @@ func main() {
 		if !checkAuthorization(w, r) {
 			return
 		}
-
 		switch r.Method {
 		case "GET":
 			processPull(brake, w, r)
@@ -102,16 +94,16 @@ func (brake *brakeContext) doTest(topic string, count int) {
 	start = time.Now().UnixNano()
 
 	for i := 1; i < k; i++ {
-		message := brake.pull(topic, idForRead)
-		if message.Id == 0 {
+		id, message := brake.pull(topic, idForRead)
+		if id == 0 {
 			println(topic, "no more", idForRead)
 			break
 		}
 
-		idForRead = message.Id + 1
+		idForRead = id + 1
 
-		res, _ := strconv.Atoi(strings.Split(message.Message, " ")[0])
-		if uint64(res) != message.Id {
+		res, _ := strconv.Atoi(strings.Split(message, " ")[0])
+		if uint64(res) != id {
 			println(topic, "error!")
 		}
 	}
@@ -200,8 +192,6 @@ func Brake() *brakeContext {
 
 	}()
 
-	//brake.rootDataDir = config.DataPath
-
 	go func() {
 		for {
 
@@ -244,7 +234,15 @@ func processPush(brake *brakeContext, w http.ResponseWriter, r *http.Request) {
 	var incommingMessage incommingHttpBody
 	json.Unmarshal([]byte(body), &incommingMessage)
 
+	if !brake.accessGranted(incommingMessage.Topic) {
+		w.WriteHeader(http.StatusBadRequest)
+		jsonData, _ := json.Marshal(brakeInfo{Error: "Topic '" + incommingMessage.Topic + "' not registered"})
+		fmt.Fprint(w, string(jsonData))
+		return
+	}
+
 	for _, message := range incommingMessage.Messages {
+
 		brake.push(incommingMessage.Topic, message)
 	}
 	res := brakeInfo{Error: ""}
@@ -253,7 +251,7 @@ func processPush(brake *brakeContext, w http.ResponseWriter, r *http.Request) {
 }
 
 type responseHttpMessage struct {
-	Id  int64  `json:"id"`
+	Id  uint64 `json:"id"`
 	Msg string `json:"msg"`
 }
 
@@ -274,17 +272,16 @@ func processPull(brake *brakeContext, w http.ResponseWriter, r *http.Request) {
 	topic := queryParams["topic"][0]
 
 	if !brake.accessGranted(topic) {
-
-		jsonData, _ := json.Marshal(brakeInfo{Error: "Topic not registered"})
+		w.WriteHeader(http.StatusBadRequest)
+		jsonData, _ := json.Marshal(brakeInfo{Error: "Topic '" + topic + "'not registered"})
 		fmt.Fprint(w, string(jsonData))
-
 		return
 	}
 
-	id, _ := strconv.ParseUint(queryParams["id"][0], 10, 64)
+	off, _ := strconv.ParseUint(queryParams["off"][0], 10, 64)
 	limit, _ := strconv.Atoi(queryParams["limit"][0])
 
-	if id == 0 {
+	if off == 0 {
 		w.Header().Add("Cache-Control", "max-age=1")
 	}
 
@@ -300,15 +297,15 @@ func processPull(brake *brakeContext, w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		msg := brake.pull(topic, id)
-		if msg.Id == 0 {
+		id, message := brake.pull(topic, off)
+		if id == 0 {
 			break
 		}
-		var message = responseHttpMessage{Id: int64(msg.Id), Msg: msg.Message}
-		res = append(res, message)
-		id = msg.Id + 1
+		var httpMessage = responseHttpMessage{Id: id, Msg: message}
+		res = append(res, httpMessage)
+		off = id + 1
 		limit--
-		maxSize -= len(message.Msg)
+		maxSize -= len(httpMessage.Msg)
 		if maxSize < 0 {
 			break
 		}
@@ -399,17 +396,7 @@ func chunkDisplayName(chunk int) string {
 	panic("chunkDisplayName() overflow")
 }
 
-/*
-type TopicInfo struct {
-	FirstId uint64
-	LastId  uint64
-}
-*/
-
 func (brake *brakeContext) info(topic string) (FirstId uint64, LastId uint64) {
-
-	//info.FirstId = 0
-	//info.LastId = 0
 
 	for _, chunk := range chunks(0) {
 		_, firstId, count := brake.openIndexFile(topic, chunkDisplayName(chunk))
@@ -425,11 +412,6 @@ func (brake *brakeContext) info(topic string) (FirstId uint64, LastId uint64) {
 		}
 	}
 	return FirstId, LastId
-}
-
-type Message struct {
-	Id      uint64
-	Message string
 }
 
 func (brake *brakeContext) getTopicContext(topic string) *topicContext {
@@ -520,8 +502,8 @@ func (brake *brakeContext) activeChunk(topic string) (int, uint64) {
 		pos, _ := f_putState.Seek(0, io.SeekEnd)
 		if pos == 0 {
 			//initialize
-			writeUint32(f_putState, uint32(topicCtx.activeChunkNo))
 			topicCtx.startTime = time.Now().Unix()
+			writeUint32(f_putState, uint32(topicCtx.activeChunkNo))
 			writeUint64(f_putState, uint64(topicCtx.startTime))
 
 			topicCtx.firstMessageIdForNewChunk = 1
@@ -559,7 +541,7 @@ func switchChunk(brake *brakeContext, topic string, startingMessageIdForNewChunk
 
 	f_putState.Seek(0, io.SeekStart)
 	writeUint32(f_putState, uint32(newChunk))
-	writeUint64(f_putState, uint64(topicCtx.startTime))
+	writeUint64(f_putState, uint64(timeNow))
 	writeUint64(f_putState, startingMessageIdForNewChunk)
 
 	topicCtx.activeChunkNo = newChunk
@@ -646,10 +628,6 @@ func (brake *brakeContext) push(topic string, message string) {
 	b.WriteString(message)
 	f_data.Write(b.Bytes())
 
-	//writeUint8(f_data, 0) //version
-	//writeUint32(f_data, uint32(len(message)))
-	//f_data.WriteString(message)
-
 	writeUint64(f_idx, uint64(offset_data))
 
 	brake.updatePredictData(topic, chunk,
@@ -668,32 +646,31 @@ func (brake *brakeContext) push(topic string, message string) {
 	topicCtx.Unlock()
 }
 
-func (brake *brakeContext) pull(topic string, id uint64) (msg Message) {
+func (brake *brakeContext) pull(topic string, off uint64) (id uint64, message string) {
 
-	if id == 0 {
-		_, id = brake.info(topic)
+	if off == 0 {
+		_, off = brake.info(topic)
 	}
 
-	msg.Id = 0
+	id = 0
 	var beside_f_idx *os.File
 	beside_chunk := 0
 	beside_idDelta := uint64(0xffffffffffffffff)
 	var beside_idxStartId uint64
 
-	priorityChunk := brake.predictChunk(topic, id)
-	for _, chunk := range chunks(priorityChunk) {
+	for _, chunk := range chunks(brake.predictChunk(topic, off)) {
 		f_idx, firstId, count := brake.openIndexFile(topic, chunkDisplayName(chunk))
 		if count > 0 {
 			brake.updatePredictData(topic, chunk, firstId, count)
-			if id >= firstId && id < (firstId+count) {
-				dataFilePos := int64(readUint64At(f_idx, int64(id-firstId+1)<<3))
+			if off >= firstId && off < (firstId+count) {
+				dataFilePos := int64(readUint64At(f_idx, int64(off-firstId+1)<<3))
 				f_data := brake.openFile(topic, dataFileName+chunkDisplayName(chunk))
-				msg.Id = id
-				msg.Message = readMessage(f_data, dataFilePos)
-				return msg
+				id = off
+				message = readMessage(f_data, dataFilePos)
+				return id, message
 			}
-			if id < firstId {
-				tempIdDelta := firstId - id
+			if off < firstId {
+				tempIdDelta := firstId - off
 				if tempIdDelta > 0 && (tempIdDelta < beside_idDelta) {
 					beside_idDelta = tempIdDelta
 					beside_f_idx = f_idx
@@ -706,9 +683,9 @@ func (brake *brakeContext) pull(topic string, id uint64) (msg Message) {
 
 	if beside_f_idx != nil {
 		f_data := brake.openFile(topic, dataFileName+chunkDisplayName(beside_chunk))
-		msg.Id = beside_idxStartId
-		msg.Message = readMessage(f_data, 0)
+		id = beside_idxStartId
+		message = readMessage(f_data, 0)
 	}
 
-	return msg
+	return id, message
 }
