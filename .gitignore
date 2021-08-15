@@ -2,4 +2,8 @@
 *.idx
 *.pst
 *.exe
-config.json
+https-server.crt
+https-server.key
+log.txt
+test_log.txt
+brake

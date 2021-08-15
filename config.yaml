@@ -1,0 +1,26 @@
+data_path: d:/temp/
+tcp_port: 9200
+
+topics:
+- name: test
+  partition_count: 2
+  data_retention_hours: 240
+  data_retention_bytes: 400000000
+  
+
+- name: alpha
+- name: betta
+- name: gamma
+- name: zup_to_ad.stuff.ad_credentials
+- name: desp.errors.log
+  general_access: true
+
+acl:
+- auth_token: Bearer 123123
+  client_id: Srvr="msk-dev-02:2541";Ref="ZUP_Rusakov";
+  rw:
+    - test
+    - desp.errors.log
+    - zup_to_ad.stuff.ad_credentials
+  ro: 
+    - betta

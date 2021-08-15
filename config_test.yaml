@@ -1,0 +1,23 @@
+data_path: testdb_dir/
+tcp_port: 9200
+
+topics:
+- name: test
+  data_retention_hours: 1
+  data_retention_bytes: 10000
+  partitions: 2
+
+- name: alpha
+  data_retention_bytes: 1000000
+
+- name: betta
+  general_access: true
+
+acl:
+- auth_token: Bearer 123123
+  client_id: Srvr="msk-dev-02:2541";Ref="ZUP_Rusakov";
+  rw: [test, alpha]
+  ro: 
+  - betta
+
+  
